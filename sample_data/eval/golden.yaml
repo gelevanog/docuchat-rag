@@ -1,0 +1,58 @@
+# Golden set for backend/scripts/eval.py.
+#   expected_document: filename of the document that answers the question (document-level hit)
+#   expected_text:     a phrase the answering chunk must contain (chunk-level hit)
+questions:
+  - question: How many vacation days do full-time employees get per year?
+    expected_document: employee-handbook.md
+    expected_text: "25 days of paid vacation"
+  - question: Can I carry unused holiday over to next year?
+    expected_document: employee-handbook.md
+    expected_text: "carried over"
+  - question: When do I need a doctor's note if I'm sick?
+    expected_document: employee-handbook.md
+    expected_text: "medical certificate"
+  - question: How long is parental leave for the non-birthing parent?
+    expected_document: employee-handbook.md
+    expected_text: "10 weeks"
+  - question: What is the maximum hotel cost I can expense in London?
+    expected_document: employee-handbook.md
+    expected_text: "220 EUR"
+  - question: How big is the annual learning budget?
+    expected_document: employee-handbook.md
+    expected_text: "1,200 EUR"
+  - question: How much does the Team plan cost?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "29 EUR per month"
+  - question: Do I need a credit card for the free trial?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "No credit card"
+  - question: In which country is customer data stored?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "Frankfurt"
+  - question: What is the refund policy for annual subscriptions?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "refunded in full within 14 days"
+  - question: What are the support hours and response times?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "08:00 to 18:00"
+  - question: Which file formats can bank statements be imported in?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "CAMT.053"
+  - question: What is the minimum password length?
+    expected_document: it-security-policy.md
+    expected_text: "14 characters"
+  - question: Are SMS codes allowed for two-factor authentication?
+    expected_document: it-security-policy.md
+    expected_text: "SMS codes are not accepted"
+  - question: What should I do if my laptop is stolen?
+    expected_document: it-security-policy.md
+    expected_text: "within one hour"
+  - question: Can I paste customer data into ChatGPT or other AI tools?
+    expected_document: it-security-policy.md
+    expected_text: "public AI tools"
+  - question: How quickly must the regulator be notified about a personal data breach?
+    expected_document: it-security-policy.md
+    expected_text: "72 hours"
+  - question: What happens if I click the link in a phishing test?
+    expected_document: it-security-policy.md
+    expected_text: "nobody is penalised"
