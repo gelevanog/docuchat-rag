@@ -2,6 +2,7 @@
 
 **Upload your PDFs, Word files and Markdown, ask questions in plain language, and get answers grounded in your own documents, with a clickable citation for every claim.**
 
+[![CI](https://github.com/gelevanog/docuchat-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/gelevanog/docuchat-rag/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.140%2B-009688?logo=fastapi&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)
@@ -25,7 +26,7 @@ Teams keep their knowledge in handbooks, policies, contracts and product docs th
 - **Conversations.** Chat history is stored in Postgres. Follow-up questions like *"and for part-timers?"* are rewritten into standalone search queries before retrieval.
 - **Provider-agnostic LLM layer.** OpenAI (chat and embeddings), Anthropic Claude (chat) and a deterministic `fake` provider. You choose with environment variables and no code changes.
 - **Retrieval evaluation.** `scripts/eval.py` reports hit-rate@k and MRR for vector-only, keyword-only and hybrid retrieval against a golden question set.
-- **Production basics.** Alembic migrations, structured JSON logs, health check, OpenAPI docs, Docker Compose and a GitLab CI pipeline.
+- **Production basics.** Alembic migrations, structured JSON logs, health check, OpenAPI docs, Docker Compose and a GitHub Actions CI pipeline.
 
 ## Architecture
 
@@ -248,7 +249,7 @@ docuchat/
 │   └── lib/                  # typed API client + incremental SSE parser
 ├── sample_data/              # original demo documents + eval/golden.yaml
 ├── docker-compose.yml        # db (pgvector) + backend + frontend
-└── .gitlab-ci.yml            # lint → test (with pgvector service) → build
+└── .github/workflows/ci.yml  # lint → test (with pgvector service) → build
 ```
 
 ## Key design decisions
