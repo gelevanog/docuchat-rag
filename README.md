@@ -9,6 +9,10 @@
 ![PostgreSQL + pgvector](https://img.shields.io/badge/PostgreSQL%2016-pgvector-4169E1?logo=postgresql&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
+https://github.com/user-attachments/assets/454d1c36-aa8d-488e-8944-5a7ad7b84bcf
+
+<sub>40-second walkthrough with voiceover. Can't play it? [Download the MP4](docs/demo.mp4).</sub>
+
 ![DocuChat screenshot: an answer with citation chips and expanded source cards](docs/screenshot.png)
 
 ## Why DocuChat?
