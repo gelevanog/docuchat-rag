@@ -30,7 +30,10 @@ export interface Source {
   heading: string | null;
   snippet: string;
   content: string;
+  /** Reciprocal Rank Fusion score of the hybrid search. */
   score: number;
+  /** Re-ranker relevance in [0, 1]; null (or absent in older messages) when re-ranking is off. */
+  rerank_score?: number | null;
 }
 
 export interface ConversationSummary {

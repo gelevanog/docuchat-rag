@@ -48,12 +48,19 @@ export function SourceCard({
         <div className="border-t border-zinc-100 px-3 pt-2 pb-3">
           <p className="max-h-72 overflow-y-auto whitespace-pre-line text-zinc-700">{plain(source.content)}</p>
           <p className="mt-2 text-[11px] text-zinc-400">
-            {source.filename} · relevance {source.score.toFixed(4)}
+            {source.filename} · {scoreLabel(source)}
           </p>
         </div>
       )}
     </div>
   );
+}
+
+/** Fusion score alone, or re-ranker relevance first when a re-ranker ordered the sources. */
+function scoreLabel(source: Source): string {
+  const fusion = source.score.toFixed(4);
+  if (source.rerank_score == null) return `relevance ${fusion}`;
+  return `rerank ${source.rerank_score.toPrecision(2)} · fusion ${fusion}`;
 }
 
 /** Source text is raw document text; drop Markdown emphasis markers for display. */
