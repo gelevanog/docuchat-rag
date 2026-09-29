@@ -6,6 +6,7 @@ Usage (from backend/, with the database running and migrated):
     uv run python scripts/eval_answers.py                      # judge: JUDGE_PROVIDER (fake)
     uv run python scripts/eval_answers.py --judge anthropic    # needs ANTHROPIC_API_KEY
     uv run python scripts/eval_answers.py --judge openai --judge-model gpt-5 --tag paraphrase
+    uv run python scripts/eval_answers.py --judge openrouter --resume   # retry failed questions
 
 Answers come from the configured pipeline (LLM_PROVIDER, EMBEDDING_PROVIDER, RERANKER,
 RETRIEVAL_TOP_K), exactly as the chat endpoint would produce them for a first question.
@@ -54,21 +55,33 @@ async def evaluate(
     questions: list[GoldenQuestion],
     document_ids: list[uuid.UUID],
 ) -> tuple[list[AnswerScore], list[str]]:
-    """Returns the scores and the questions the judge failed on (reported, not scored)."""
+    """Returns the scores and the questions that failed (reported, not scored): free and
+    rate-limited models do fail now and then, and one error shouldn't sink the whole run."""
     scores: list[AnswerScore] = []
     failures: list[str] = []
     for q in questions:
-        async with container.sessionmaker() as session:
-            chunks, answer = await container.chat.answer(session, q.question, document_ids)
-        case = JudgeCase.build(q.question, chunks, answer)
         try:
+            async with container.sessionmaker() as session:
+                chunks, answer = await container.chat.answer(session, q.question, document_ids)
+            case = JudgeCase.build(q.question, chunks, answer)
             verdict = await judge.judge(case)
         except LLMError as exc:
-            print(f"judge failed on {q.question!r}: {exc}", file=sys.stderr)
+            print(f"failed on {q.question!r}: {exc}", file=sys.stderr)
             failures.append(q.question)
             continue
         scores.append(score_answer(case, verdict))
     return scores, failures
+
+
+def load_previous(path: Path, config: dict[str, object]) -> list[AnswerScore]:
+    """Scored answers from an earlier report, if it was produced with the same setup."""
+    if not path.exists():
+        return []
+    report = json.loads(path.read_text())
+    changed = [key for key, value in config.items() if report.get(key) != value]
+    if changed:
+        raise ValueError(f"the report was made with a different {', '.join(changed)}")
+    return [AnswerScore.model_validate(answer) for answer in report["answers"]]
 
 
 def _fmt(value: float | None) -> str:
@@ -99,7 +112,7 @@ def print_report(
     if summary.unjudged:
         print(f"{'unjudged items':<20}{summary.unjudged:>6}   (scored as failures)")
     if failures:
-        print(f"{'judge errors':<20}{len(failures):>6}   (excluded from the scores)")
+        print(f"{'model errors':<20}{len(failures):>6}   (excluded from the scores)")
 
     flagged = [
         s
@@ -131,6 +144,12 @@ async def main() -> int:
     parser.add_argument(
         "--output", type=Path, default=Path("data/eval/answer-quality.json"), help="JSON report"
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="keep the answers already scored in --output (same setup) and evaluate the rest,"
+        " e.g. after model errors or a provider's daily limit",
+    )
     args = parser.parse_args()
 
     configure_logging("WARNING", settings.log_format)
@@ -145,30 +164,45 @@ async def main() -> int:
         return 1
 
     container = Container.build(settings)
-    try:
-        doc_ids = await ingest_directory(container, args.docs)
-        scores, failures = await evaluate(container, judge, questions, list(doc_ids.values()))
-    finally:
-        await container.aclose()
-
-    summary = summarize(scores)
     reranker = container.reranker.name if container.reranker else "none"
-    header = (
-        f"Judge: {judge.name} | answers: {container.chat_model.name} | "
-        f"retrieval: {container.embedder.name}, reranker {reranker}, "
-        f"top-{settings.retrieval_top_k} | questions: {len(questions)}"
-    )
-    print_report(scores, summary, failures, header)
-
-    report = {
+    config: dict[str, object] = {
         "judge": judge.name,
         "chat_model": container.chat_model.name,
         "embedder": container.embedder.name,
         "reranker": reranker,
         "top_k": settings.retrieval_top_k,
+    }
+    try:
+        previous = load_previous(args.output, config) if args.resume else []
+    except ValueError as exc:
+        await container.aclose()
+        print(f"Cannot resume from {args.output}: {exc}", file=sys.stderr)
+        return 1
+    done = {score.question for score in previous}
+    try:
+        doc_ids = await ingest_directory(container, args.docs)
+        todo = [q for q in questions if q.question not in done]
+        new_scores, failures = await evaluate(container, judge, todo, list(doc_ids.values()))
+    finally:
+        await container.aclose()
+
+    by_question = {score.question: score for score in [*previous, *new_scores]}
+    scores = [by_question[q.question] for q in questions if q.question in by_question]
+    summary = summarize(scores)
+    header = (
+        f"Judge: {judge.name} | answers: {container.chat_model.name} | "
+        f"retrieval: {container.embedder.name}, reranker {reranker}, "
+        f"top-{settings.retrieval_top_k} | questions: {len(questions)}"
+    )
+    if previous:
+        header += f" ({len(done)} resumed from {args.output})"
+    print_report(scores, summary, failures, header)
+
+    report = {
+        **config,
         "summary": summary.model_dump(),
         "answers": [s.model_dump() for s in scores],
-        "judge_errors": failures,
+        "errors": failures,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
