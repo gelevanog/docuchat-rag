@@ -1,6 +1,7 @@
 # Golden set for backend/scripts/eval.py.
 #   expected_document: filename of the document that answers the question (document-level hit)
 #   expected_text:     a phrase the answering chunk must contain (chunk-level hit)
+#   tags:              optional labels; `scripts/eval.py --tag paraphrase` evaluates a subset
 questions:
   - question: How many vacation days do full-time employees get per year?
     expected_document: employee-handbook.md
@@ -56,3 +57,53 @@ questions:
   - question: What happens if I click the link in a phishing test?
     expected_document: it-security-policy.md
     expected_text: "nobody is penalised"
+  # Paraphrased questions: written without the documents' key terms, so neither
+  # the keyword nor the (lexical, offline) vector retriever gets an easy match.
+  - question: How far ahead should I ask for a week off?
+    expected_document: employee-handbook.md
+    expected_text: "at least two weeks in advance"
+    tags: [paraphrase]
+  - question: Is there money for setting up a workspace at home?
+    expected_document: employee-handbook.md
+    expected_text: "600 EUR"
+    tags: [paraphrase]
+  - question: How long do I have to hand back my work computer after I quit?
+    expected_document: employee-handbook.md
+    expected_text: "within ten working days"
+    tags: [paraphrase]
+  - question: When are pay raises decided?
+    expected_document: employee-handbook.md
+    expected_text: "following the April review"
+    tags: [paraphrase]
+  - question: What's the daily food allowance on business trips?
+    expected_document: employee-handbook.md
+    expected_text: "daily limit of 60 EUR"
+    tags: [paraphrase]
+  - question: How many days can I spend on courses without using up my holiday?
+    expected_document: employee-handbook.md
+    expected_text: "five working days per year"
+    tags: [paraphrase]
+  - question: Is it cheaper if I pay for a whole year up front?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "20% discount"
+    tags: [paraphrase]
+  - question: How many people can use the mid-tier plan?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "up to five users"
+    tags: [paraphrase]
+  - question: How long are copies of my data retained for disaster recovery?
+    expected_document: kestrel-ledger-faq.md
+    expected_text: "kept for 35 days"
+    tags: [paraphrase]
+  - question: Can I read work email on my own phone?
+    expected_document: it-security-policy.md
+    expected_text: "mobile device management"
+    tags: [paraphrase]
+  - question: Who is given a physical security key?
+    expected_document: it-security-policy.md
+    expected_text: "engineers with production access"
+    tags: [paraphrase]
+  - question: When is a departing employee's access switched off?
+    expected_document: it-security-policy.md
+    expected_text: "last working day before 18:00"
+    tags: [paraphrase]
