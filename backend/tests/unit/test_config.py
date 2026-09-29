@@ -28,6 +28,22 @@ def test_real_providers_require_keys() -> None:
         Settings(_env_file=None, judge_provider="anthropic")
     with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
         Settings(_env_file=None, judge_provider="openai")
+    with pytest.raises(ValidationError, match="OPENROUTER_API_KEY"):
+        Settings(_env_file=None, embedding_provider="openrouter")
+
+
+def test_openrouter_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_FALLBACK_MODELS", "a/b:free, c/d:free,")
+    monkeypatch.setenv("OPENROUTER_APP_NAME", "")
+    settings = Settings(_env_file=None)
+    assert settings.openrouter_fallback_models == ["a/b:free", "c/d:free"]
+    assert settings.openrouter_app_name is None
+    assert settings.openrouter_min_interval_s == 3.0
+    monkeypatch.setenv("OPENROUTER_FALLBACK_MODELS", "a:free,b:free,c:free")
+    with pytest.raises(ValidationError, match="at most 2"):
+        Settings(_env_file=None)
 
 
 def test_rerank_settings(monkeypatch: pytest.MonkeyPatch) -> None:

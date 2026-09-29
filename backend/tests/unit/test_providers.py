@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx2
+import openai
 import pytest
 from pydantic import BaseModel
+from structlog.testing import capture_logs
 
 from app.core.config import Settings
 from app.llm.anthropic_provider import REFUSAL_NOTICE, AnthropicChatModel
 from app.llm.base import ChatMessage, LLMError
+from app.llm.cache import CachingEmbeddingModel
 from app.llm.factory import build_chat_model, build_embedding_model, build_structured_model
 from app.llm.fake import FakeChatModel, HashingEmbeddingModel
 from app.llm.openai_provider import OpenAIChatModel, OpenAIEmbeddingModel
+from app.llm.pacing import RequestPacer
 
 MESSAGES = [ChatMessage("user", "Hi"), ChatMessage("assistant", "Hello"), ChatMessage("user", "Q?")]
 
@@ -71,7 +77,8 @@ async def test_anthropic_surfaces_refusals() -> None:
 
 
 class _OpenAIClient:
-    def __init__(self) -> None:
+    def __init__(self, served: str = "gpt-test", dim: int = 8) -> None:
+        self.served = served
         self.chat_kwargs: dict[str, Any] = {}
         self.embed_kwargs: dict[str, Any] = {}
 
@@ -81,14 +88,15 @@ class _OpenAIClient:
             async def chunks() -> AsyncIterator[SimpleNamespace]:
                 for text in ["Hello", None, " world"]:
                     delta = SimpleNamespace(content=text)
-                    yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+                    yield SimpleNamespace(model=self.served, choices=[SimpleNamespace(delta=delta)])
 
             return chunks()
 
         async def create_embeddings(**kwargs: Any) -> SimpleNamespace:
             self.embed_kwargs = kwargs
             data = [
-                SimpleNamespace(index=i, embedding=[float(i)]) for i in range(len(kwargs["input"]))
+                SimpleNamespace(index=i, embedding=[float(i)] * dim)
+                for i in range(len(kwargs["input"]))
             ]
             return SimpleNamespace(data=list(reversed(data)))
 
@@ -109,7 +117,7 @@ async def test_openai_chat_streams_deltas_with_system_message_first() -> None:
 async def test_openai_embeddings_preserve_input_order() -> None:
     client = _OpenAIClient()
     model = OpenAIEmbeddingModel(client, "text-embedding-3-small", dim=8)  # type: ignore[arg-type]
-    assert await model.embed(["a", "b", "c"]) == [[0.0], [1.0], [2.0]]
+    assert await model.embed(["a", "b", "c"]) == [[0.0] * 8, [1.0] * 8, [2.0] * 8]
     assert client.embed_kwargs["dimensions"] == 8
     assert await model.embed([]) == []
 
@@ -183,7 +191,7 @@ class _OpenAIParseClient:
         async def parse(**kwargs: Any) -> SimpleNamespace:
             self.kwargs = kwargs
             message = SimpleNamespace(parsed=parsed, refusal=refusal)
-            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+            return SimpleNamespace(model="gpt-test", choices=[SimpleNamespace(message=message)])
 
         self.chat = SimpleNamespace(completions=SimpleNamespace(parse=parse))
 
@@ -212,3 +220,110 @@ def test_structured_models_follow_the_configured_provider() -> None:
     assert build_structured_model(settings, "openai", "gpt-judge").name == "openai:gpt-judge"
     with pytest.raises(ValueError, match="fake provider"):
         build_structured_model(settings, "fake")
+
+
+async def test_embeddings_of_the_wrong_size_are_rejected() -> None:
+    model = OpenAIEmbeddingModel(_OpenAIClient(dim=4), "m", dim=8)  # type: ignore[arg-type]
+    with pytest.raises(LLMError, match="4-dimensional vectors; EMBEDDING_DIM is 8"):
+        await model.embed(["a"])
+
+
+async def test_fallback_models_are_sent_and_a_fallback_is_logged() -> None:
+    client = _OpenAIClient(served="backup:free")
+    model = OpenAIChatModel(
+        client,  # type: ignore[arg-type]
+        "primary:free",
+        label="openrouter",
+        fallback_models=["primary:free", "backup:free"],
+    )
+    with capture_logs() as logs:
+        assert await _collect(model.stream("SYSTEM", MESSAGES)) == "Hello world"
+    assert client.chat_kwargs["extra_body"] == {"models": ["primary:free", "backup:free"]}
+    assert model.name == "openrouter:primary:free"
+    assert [(e["event"], e["served"]) for e in logs] == [("model_fallback", "backup:free")]
+
+    plain = _OpenAIClient()
+    await _collect(OpenAIChatModel(plain, "gpt-test").stream("SYSTEM", MESSAGES))  # type: ignore[arg-type]
+    assert plain.chat_kwargs["extra_body"] is None
+
+
+def test_openrouter_models_share_a_pacer_and_only_the_chat_model_falls_back() -> None:
+    settings = Settings(
+        _env_file=None,
+        llm_provider="openrouter",
+        embedding_provider="openrouter",
+        embedding_dim=1024,
+        openrouter_api_key="sk-or-test",
+        openrouter_app_url="https://example.test",
+        openrouter_fallback_models="a/b:free, c/d:free",
+    )
+    chat = build_chat_model(settings)
+    assert isinstance(chat, OpenAIChatModel)
+    assert chat.name == "openrouter:nvidia/nemotron-3-super-120b-a12b:free"
+    assert chat._extra_body() == {
+        "models": ["nvidia/nemotron-3-super-120b-a12b:free", "a/b:free", "c/d:free"]
+    }
+    client = chat._client
+    assert str(client.base_url) == "https://openrouter.ai/api/v1/"
+    assert client.default_headers["HTTP-Referer"] == "https://example.test"
+    assert client.default_headers["X-Title"] == "DocuChat"
+    assert client.max_retries == 0
+
+    judge = build_structured_model(settings, "openrouter", "dots-studio/dots-3-note-preview:free")
+    assert isinstance(judge, OpenAIChatModel)
+    assert judge._extra_body() is None  # a judge never silently switches models
+
+    embedder = build_embedding_model(settings)
+    assert isinstance(embedder, OpenAIEmbeddingModel)
+    assert embedder.name == "openrouter:liquid/lfm-2.5-embedding-350m:free"
+    assert embedder._pacer is chat._pacer is judge._pacer
+    assert chat._pacer is not None
+
+
+def test_embedding_cache_wraps_any_provider(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, embedding_dim=64, embedding_cache_path=tmp_path / "c.json")
+    embedder = build_embedding_model(settings)
+    assert isinstance(embedder, CachingEmbeddingModel)
+    assert embedder.name == "fake:hashing-64"
+
+
+class _OverloadedThenHealthyClient:
+    """OpenRouter-style: the first stream starts with HTTP 200, then carries an error event."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+        async def create(**kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+            self.calls += 1
+            failing = self.calls == 1
+
+            async def chunks() -> AsyncIterator[SimpleNamespace]:
+                yield SimpleNamespace(model="primary:free", choices=[])  # keep-alive / role
+                if failing:
+                    request = httpx2.Request("POST", "https://openrouter.test/v1/chat")
+                    raise openai.APIError("Upstream error: overloaded", request, body=None)
+                for text in ["Twenty-five ", "days [1]."]:
+                    delta = SimpleNamespace(content=text)
+                    yield SimpleNamespace(
+                        model="primary:free", choices=[SimpleNamespace(delta=delta)]
+                    )
+
+            return chunks()
+
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+
+async def test_stream_errors_before_the_first_token_are_retried() -> None:
+    client = _OverloadedThenHealthyClient()
+    pacer = RequestPacer(retries=2, backoff=0.0)
+    model = OpenAIChatModel(client, "primary:free", label="openrouter", pacer=pacer)  # type: ignore[arg-type]
+    assert await _collect(model.stream("SYSTEM", MESSAGES)) == "Twenty-five days [1]."
+    assert client.calls == 2
+
+    no_retries = OpenAIChatModel(
+        _OverloadedThenHealthyClient(),  # type: ignore[arg-type]
+        "primary:free",
+        pacer=RequestPacer(retries=0),
+    )
+    with pytest.raises(LLMError, match="overloaded"):
+        await _collect(no_retries.stream("SYSTEM", MESSAGES))

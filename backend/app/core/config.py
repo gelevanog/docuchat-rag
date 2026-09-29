@@ -9,8 +9,8 @@ from typing import Annotated, Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-LLMProviderName = Literal["fake", "openai", "anthropic"]
-EmbeddingProviderName = Literal["fake", "openai"]
+LLMProviderName = Literal["fake", "openai", "anthropic", "openrouter"]
+EmbeddingProviderName = Literal["fake", "openai", "openrouter"]
 RerankerName = Literal["none", "fake", "cross-encoder", "llm"]
 
 
@@ -68,6 +68,26 @@ class Settings(BaseSettings):
     anthropic_max_tokens: int = Field(default=16000, ge=256)
     anthropic_effort: Literal["low", "medium", "high"] = "medium"
 
+    # OpenRouter (OpenAI-compatible). The defaults are free models (as of 2026-09): rate-limited,
+    # so requests are paced and retried, and the chat model falls back along the list.
+    openrouter_api_key: SecretStr | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_chat_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    # OpenRouter accepts at most 3 models per request: the chat model plus 2 fallbacks.
+    openrouter_fallback_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["google/gemma-4-31b-it:free", "qwen/qwen3.8-27b:free"],
+        max_length=2,
+    )
+    openrouter_embedding_model: str = "liquid/lfm-2.5-embedding-350m:free"
+    openrouter_app_url: str | None = None
+    openrouter_app_name: str | None = "DocuChat"
+    openrouter_min_interval_s: float = Field(default=3.0, ge=0)
+    openrouter_retries: int = Field(default=4, ge=0)
+    openrouter_backoff_s: float = Field(default=5.0, ge=0)
+
+    # Optional on-disk cache of embeddings (saves quota when re-running ingestion or evals).
+    embedding_cache_path: Path | None = None
+
     fake_stream_delay_ms: int = Field(default=12, ge=0)
 
     # --- Answer-quality judge (scripts/eval_answers.py) -----------------------
@@ -81,11 +101,22 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("openrouter_fallback_models", mode="before")
+    @classmethod
+    def _split_models(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [model.strip() for model in value.split(",") if model.strip()]
+        return value
+
     @field_validator(
         "openai_api_key",
         "anthropic_api_key",
+        "openrouter_api_key",
         "openai_base_url",
+        "openrouter_app_url",
+        "openrouter_app_name",
         "rerank_cache_dir",
+        "embedding_cache_path",
         "judge_model",
         mode="before",
     )
@@ -103,8 +134,10 @@ class Settings(BaseSettings):
             raise ValueError("OPENAI_API_KEY is required when an OpenAI provider is selected")
         if "anthropic" in providers and self.anthropic_api_key is None:
             raise ValueError("ANTHROPIC_API_KEY is required when an Anthropic provider is selected")
+        if "openrouter" in providers and self.openrouter_api_key is None:
+            raise ValueError("OPENROUTER_API_KEY is required when OpenRouter is selected")
         if self.reranker == "llm" and self.llm_provider == "fake":
-            raise ValueError("RERANKER=llm needs a real LLM_PROVIDER (openai or anthropic)")
+            raise ValueError("RERANKER=llm needs a real LLM_PROVIDER, not fake")
         return self
 
     @property
