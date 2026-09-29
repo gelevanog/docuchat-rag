@@ -122,6 +122,23 @@ class ChatService:
             for m in reversed(list(rows))
         ]
 
+    async def answer(
+        self,
+        session: AsyncSession,
+        question: str,
+        document_ids: Sequence[uuid.UUID] | None = None,
+        top_k: int | None = None,
+    ) -> tuple[list[RetrievedChunk], str]:
+        """Single-turn retrieve -> generate, like `stream` but not persisted (used by evals)."""
+        chunks = await self._retriever.search(
+            session, question, top_k or self._default_top_k, document_ids
+        )
+        if not chunks:
+            return [], NO_ANSWER
+        messages = build_answer_messages(question, chunks)
+        parts = [delta async for delta in self._chat_model.stream(ANSWER_SYSTEM_PROMPT, messages)]
+        return chunks, "".join(parts).strip()
+
     async def stream(
         self,
         session: AsyncSession,

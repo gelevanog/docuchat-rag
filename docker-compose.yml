@@ -50,6 +50,8 @@ services:
       RERANKER: ${RERANKER:-none}
       RERANK_CANDIDATES: ${RERANK_CANDIDATES:-20}
       RERANK_MODEL: ${RERANK_MODEL:-Xenova/ms-marco-MiniLM-L-6-v2}
+      JUDGE_PROVIDER: ${JUDGE_PROVIDER:-fake}
+      JUDGE_MODEL: ${JUDGE_MODEL:-}
     volumes:
       - uploads:/data/uploads
       - ./sample_data:/sample_data:ro

@@ -70,6 +70,10 @@ class Settings(BaseSettings):
 
     fake_stream_delay_ms: int = Field(default=12, ge=0)
 
+    # --- Answer-quality judge (scripts/eval_answers.py) -----------------------
+    judge_provider: LLMProviderName = "fake"
+    judge_model: str | None = None
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
@@ -82,6 +86,7 @@ class Settings(BaseSettings):
         "anthropic_api_key",
         "openai_base_url",
         "rerank_cache_dir",
+        "judge_model",
         mode="before",
     )
     @classmethod
@@ -93,7 +98,7 @@ class Settings(BaseSettings):
     def _check_provider_credentials(self) -> Settings:
         if self.chunk_overlap_tokens >= self.chunk_size_tokens:
             raise ValueError("CHUNK_OVERLAP_TOKENS must be smaller than CHUNK_SIZE_TOKENS")
-        providers = {self.llm_provider, self.embedding_provider}
+        providers = {self.llm_provider, self.embedding_provider, self.judge_provider}
         if "openai" in providers and self.openai_api_key is None:
             raise ValueError("OPENAI_API_KEY is required when an OpenAI provider is selected")
         if "anthropic" in providers and self.anthropic_api_key is None:

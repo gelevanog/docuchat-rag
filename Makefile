@@ -5,10 +5,10 @@ DEV_DB_CONTAINER := docuchat-dev-db
 DEV_DB_PORT ?= 5432
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs dev-db backend frontend install test-db test lint format eval
+.PHONY: help up down logs dev-db backend frontend install test-db test lint format eval eval-answers
 
 help: ## Show available targets
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-13s\033[0m %s\n", $$1, $$2}'
 
 up: ## Build and start the full stack (db + backend + frontend) with Docker
 	docker compose up --build -d
@@ -51,3 +51,6 @@ format: ## Auto-format backend code
 
 eval: ## Run the retrieval evaluation inside the running backend container
 	docker compose exec backend python scripts/eval.py
+
+eval-answers: ## Run the answer-quality evaluation (JUDGE_PROVIDER) inside the backend container
+	docker compose exec backend python scripts/eval_answers.py

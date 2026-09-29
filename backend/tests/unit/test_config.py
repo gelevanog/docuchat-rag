@@ -11,6 +11,7 @@ def test_defaults_run_without_api_keys() -> None:
     assert settings.llm_provider == "fake"
     assert settings.embedding_provider == "fake"
     assert settings.reranker == "none"
+    assert settings.judge_provider == "fake"
 
 
 def test_cors_origins_accept_comma_separated_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23,6 +24,10 @@ def test_real_providers_require_keys() -> None:
         Settings(_env_file=None, embedding_provider="openai")
     with pytest.raises(ValidationError, match="ANTHROPIC_API_KEY"):
         Settings(_env_file=None, llm_provider="anthropic")
+    with pytest.raises(ValidationError, match="ANTHROPIC_API_KEY"):
+        Settings(_env_file=None, judge_provider="anthropic")
+    with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
+        Settings(_env_file=None, judge_provider="openai")
 
 
 def test_rerank_settings(monkeypatch: pytest.MonkeyPatch) -> None:
