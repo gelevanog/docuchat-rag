@@ -9,7 +9,7 @@
 ![PostgreSQL + pgvector](https://img.shields.io/badge/PostgreSQL%2016-pgvector-4169E1?logo=postgresql&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
-https://github.com/user-attachments/assets/454d1c36-aa8d-488e-8944-5a7ad7b84bcf
+https://github.com/user-attachments/assets/6c97fa80-11c8-4f78-adfb-5f405aeec6b0
 
 <sub>40-second walkthrough with voiceover. Can't play it? [Download the MP4](docs/demo.mp4).</sub>
 
