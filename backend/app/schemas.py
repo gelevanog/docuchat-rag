@@ -68,7 +68,10 @@ class SourceOut(BaseModel):
     heading: str | None
     snippet: str
     content: str
-    score: float
+    score: float = Field(description="Reciprocal Rank Fusion score of the hybrid search.")
+    rerank_score: float | None = Field(
+        default=None, description="Re-ranker relevance in [0, 1]; null when re-ranking is off."
+    )
 
 
 class ChatMetaEvent(BaseModel):
@@ -126,4 +129,5 @@ class HealthOut(BaseModel):
     database: str
     llm_provider: str
     embedding_provider: str
+    reranker: str | None
     version: str

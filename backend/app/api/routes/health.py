@@ -26,5 +26,6 @@ async def health(container: ContainerDep, session: SessionDep, response: Respons
         database=database,
         llm_provider=container.chat_model.name,
         embedding_provider=container.embedder.name,
+        reranker=container.reranker.name if container.reranker else None,
         version=__version__,
     )

@@ -43,7 +43,7 @@ test: ## Run backend tests (integration tests are skipped if the test DB is down
 	cd backend && uv run pytest
 
 lint: ## Lint and type-check backend and frontend
-	cd backend && uv run ruff check . && uv run ruff format --check . && uv run mypy app scripts
+	cd backend && uv run ruff check . && uv run ruff format --check . && uv run --extra rerank mypy app scripts
 	cd frontend && npm run lint && npx tsc --noEmit
 
 format: ## Auto-format backend code

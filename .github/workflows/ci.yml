@@ -29,7 +29,8 @@ jobs:
           cache-dependency-glob: backend/uv.lock
 
       - name: Install dependencies
-        run: uv sync --locked
+        # The rerank extra is installed so mypy also checks the fastembed adapter.
+        run: uv sync --locked --extra rerank
 
       - name: Ruff check
         run: uv run ruff check .

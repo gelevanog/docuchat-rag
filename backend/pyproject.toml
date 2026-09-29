@@ -23,6 +23,10 @@ dependencies = [
     "uvicorn[standard]>=0.32",
 ]
 
+[project.optional-dependencies]
+# Local cross-encoder re-ranking (RERANKER=cross-encoder): ONNX Runtime, no PyTorch.
+rerank = ["fastembed>=0.8"]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28",
@@ -70,11 +74,18 @@ ignore = [
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.File"]
 
 [tool.mypy]
-python_version = "3.11"
+# 3.12 matches .python-version, Docker and CI. numpy (from the `rerank` extra) ships stubs with
+# 3.12-only syntax; ruff's py311 target still guards the source against newer syntax.
+python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["migrations/"]
 
 [[tool.mypy.overrides]]
 module = ["pgvector.*", "docx.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Optional `rerank` extra: fully typed when installed, treated as Any when it isn't.
+module = ["fastembed.*"]
 ignore_missing_imports = true

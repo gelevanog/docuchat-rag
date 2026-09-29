@@ -20,7 +20,12 @@ services:
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        # BACKEND_EXTRAS=rerank installs the local cross-encoder for RERANKER=cross-encoder.
+        EXTRAS: ${BACKEND_EXTRAS:-}
+        RERANK_MODEL: ${RERANK_MODEL:-Xenova/ms-marco-MiniLM-L-6-v2}
     depends_on:
       db:
         condition: service_healthy
@@ -42,6 +47,9 @@ services:
       CHUNK_SIZE_TOKENS: ${CHUNK_SIZE_TOKENS:-400}
       CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-60}
       RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-6}
+      RERANKER: ${RERANKER:-none}
+      RERANK_CANDIDATES: ${RERANK_CANDIDATES:-20}
+      RERANK_MODEL: ${RERANK_MODEL:-Xenova/ms-marco-MiniLM-L-6-v2}
     volumes:
       - uploads:/data/uploads
       - ./sample_data:/sample_data:ro

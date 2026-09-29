@@ -12,6 +12,7 @@ from app.ingestion.chunking import RecursiveTokenSplitter, TiktokenTokenizer
 from app.ingestion.pipeline import IngestionPipeline
 from app.llm.base import ChatModel, EmbeddingModel
 from app.llm.factory import build_chat_model, build_embedding_model
+from app.retrieval.rerank import Reranker, build_reranker
 from app.retrieval.search import HybridRetriever
 from app.services.chat import ChatService
 from app.services.documents import DocumentService
@@ -25,6 +26,7 @@ class Container:
     sessionmaker: async_sessionmaker[AsyncSession]
     chat_model: ChatModel
     embedder: EmbeddingModel
+    reranker: Reranker | None
     retriever: HybridRetriever
     pipeline: IngestionPipeline
     documents: DocumentService
@@ -41,8 +43,13 @@ class Container:
             chunk_size=settings.chunk_size_tokens,
             chunk_overlap=settings.chunk_overlap_tokens,
         )
+        reranker = build_reranker(settings.reranker, settings)
         retriever = HybridRetriever(
-            embedder, candidates=settings.retrieval_candidates, rrf_k=settings.rrf_k
+            embedder,
+            candidates=settings.retrieval_candidates,
+            rrf_k=settings.rrf_k,
+            reranker=reranker,
+            rerank_candidates=settings.rerank_candidates,
         )
         return cls(
             settings=settings,
@@ -50,6 +57,7 @@ class Container:
             sessionmaker=sessionmaker,
             chat_model=chat_model,
             embedder=embedder,
+            reranker=reranker,
             retriever=retriever,
             pipeline=IngestionPipeline(
                 sessionmaker, embedder, splitter, batch_size=settings.embedding_batch_size

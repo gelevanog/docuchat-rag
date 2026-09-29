@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LLMProviderName = Literal["fake", "openai", "anthropic"]
 EmbeddingProviderName = Literal["fake", "openai"]
+RerankerName = Literal["none", "fake", "cross-encoder", "llm"]
 
 
 class Settings(BaseSettings):
@@ -46,6 +47,12 @@ class Settings(BaseSettings):
     rrf_k: int = Field(default=60, ge=1)
     history_turns: int = Field(default=6, ge=0)
 
+    # --- Re-ranking (applied to the fused candidates) ------------------------
+    reranker: RerankerName = "none"
+    rerank_candidates: int = Field(default=20, ge=1, le=100)
+    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    rerank_cache_dir: Path | None = None
+
     # --- Providers ---------------------------------------------------------
     llm_provider: LLMProviderName = "fake"
     embedding_provider: EmbeddingProviderName = "fake"
@@ -70,7 +77,13 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
-    @field_validator("openai_api_key", "anthropic_api_key", "openai_base_url", mode="before")
+    @field_validator(
+        "openai_api_key",
+        "anthropic_api_key",
+        "openai_base_url",
+        "rerank_cache_dir",
+        mode="before",
+    )
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         # docker compose passes unset variables as empty strings.
@@ -80,11 +93,13 @@ class Settings(BaseSettings):
     def _check_provider_credentials(self) -> Settings:
         if self.chunk_overlap_tokens >= self.chunk_size_tokens:
             raise ValueError("CHUNK_OVERLAP_TOKENS must be smaller than CHUNK_SIZE_TOKENS")
-        needs_openai = self.llm_provider == "openai" or self.embedding_provider == "openai"
-        if needs_openai and self.openai_api_key is None:
+        providers = {self.llm_provider, self.embedding_provider}
+        if "openai" in providers and self.openai_api_key is None:
             raise ValueError("OPENAI_API_KEY is required when an OpenAI provider is selected")
-        if self.llm_provider == "anthropic" and self.anthropic_api_key is None:
-            raise ValueError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic")
+        if "anthropic" in providers and self.anthropic_api_key is None:
+            raise ValueError("ANTHROPIC_API_KEY is required when an Anthropic provider is selected")
+        if self.reranker == "llm" and self.llm_provider == "fake":
+            raise ValueError("RERANKER=llm needs a real LLM_PROVIDER (openai or anthropic)")
         return self
 
     @property

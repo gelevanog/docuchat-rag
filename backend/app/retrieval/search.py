@@ -1,4 +1,5 @@
-"""Hybrid retrieval: pgvector cosine similarity + PostgreSQL full-text search, fused with RRF."""
+"""Hybrid retrieval: pgvector cosine similarity + PostgreSQL full-text search, fused with RRF,
+optionally followed by a re-ranker over a larger pool of fused candidates."""
 
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from app.core.logging import get_logger
 from app.db.models import Chunk, Document, DocumentStatus
 from app.llm.base import EmbeddingModel
 from app.retrieval.fusion import reciprocal_rank_fusion
+from app.retrieval.rerank import Reranker
 from app.retrieval.types import RetrievedChunk
 
 logger = get_logger(__name__)
@@ -28,10 +30,19 @@ def _or_tsquery(query: str) -> ColumnElement[Any]:
 
 
 class HybridRetriever:
-    def __init__(self, embedder: EmbeddingModel, candidates: int = 30, rrf_k: int = 60) -> None:
+    def __init__(
+        self,
+        embedder: EmbeddingModel,
+        candidates: int = 30,
+        rrf_k: int = 60,
+        reranker: Reranker | None = None,
+        rerank_candidates: int = 20,
+    ) -> None:
         self._embedder = embedder
         self._candidates = candidates
         self._rrf_k = rrf_k
+        self._reranker = reranker
+        self._rerank_candidates = rerank_candidates
 
     @staticmethod
     def _candidate_ids(document_ids: Sequence[uuid.UUID] | None) -> Select[uuid.UUID]:
@@ -77,21 +88,21 @@ class HybridRetriever:
         )
         return list(await session.scalars(stmt))
 
-    async def search(
-        self,
-        session: AsyncSession,
-        query: str,
-        top_k: int,
-        document_ids: Sequence[uuid.UUID] | None = None,
-    ) -> list[RetrievedChunk]:
-        [query_embedding] = await self._embedder.embed([query])
-        vector_ids = await self.vector_search(session, query_embedding, document_ids)
-        keyword_ids = await self.keyword_search(session, query, document_ids)
+    def fuse(
+        self, vector_ids: Sequence[uuid.UUID], keyword_ids: Sequence[uuid.UUID]
+    ) -> list[tuple[uuid.UUID, float]]:
+        return reciprocal_rank_fusion([vector_ids, keyword_ids], k=self._rrf_k)
 
-        fused = reciprocal_rank_fusion([vector_ids, keyword_ids], k=self._rrf_k)[:top_k]
+    @staticmethod
+    async def load_chunks(
+        session: AsyncSession,
+        fused: Sequence[tuple[uuid.UUID, float]],
+        vector_ids: Sequence[uuid.UUID],
+        keyword_ids: Sequence[uuid.UUID],
+    ) -> list[RetrievedChunk]:
+        """Hydrate fused (chunk id, score) pairs into `RetrievedChunk`s, keeping their order."""
         if not fused:
             return []
-
         rows = await session.execute(
             select(
                 Chunk.id,
@@ -108,29 +119,48 @@ class HybridRetriever:
         by_id = {row.id: row for row in rows}
         vector_rank = {chunk_id: rank for rank, chunk_id in enumerate(vector_ids, start=1)}
         keyword_rank = {chunk_id: rank for rank, chunk_id in enumerate(keyword_ids, start=1)}
-
-        results = []
-        for chunk_id, score in fused:
-            row = by_id[chunk_id]
-            results.append(
-                RetrievedChunk(
-                    chunk_id=row.id,
-                    document_id=row.document_id,
-                    document_title=row.title,
-                    filename=row.filename,
-                    content=row.content,
-                    heading=row.heading,
-                    page=row.page,
-                    score=score,
-                    vector_rank=vector_rank.get(chunk_id),
-                    keyword_rank=keyword_rank.get(chunk_id),
-                )
+        return [
+            RetrievedChunk(
+                chunk_id=row.id,
+                document_id=row.document_id,
+                document_title=row.title,
+                filename=row.filename,
+                content=row.content,
+                heading=row.heading,
+                page=row.page,
+                score=score,
+                vector_rank=vector_rank.get(chunk_id),
+                keyword_rank=keyword_rank.get(chunk_id),
             )
+            for chunk_id, score in fused
+            if (row := by_id.get(chunk_id)) is not None
+        ]
+
+    async def search(
+        self,
+        session: AsyncSession,
+        query: str,
+        top_k: int,
+        document_ids: Sequence[uuid.UUID] | None = None,
+    ) -> list[RetrievedChunk]:
+        [query_embedding] = await self._embedder.embed([query])
+        vector_ids = await self.vector_search(session, query_embedding, document_ids)
+        keyword_ids = await self.keyword_search(session, query, document_ids)
+
+        # With a re-ranker, fetch a larger pool of fused candidates and let it pick the top-k.
+        pool = top_k if self._reranker is None else max(top_k, self._rerank_candidates)
+        fused = self.fuse(vector_ids, keyword_ids)[:pool]
+        results = await self.load_chunks(session, fused, vector_ids, keyword_ids)
+        if self._reranker is not None and results:
+            results = await self._reranker.rerank(query, results, top_k)
+
         logger.debug(
             "hybrid_search",
             query=query,
             vector_hits=len(vector_ids),
             keyword_hits=len(keyword_ids),
+            candidates=len(fused),
+            reranker=self._reranker.name if self._reranker else None,
             returned=len(results),
         )
         return results

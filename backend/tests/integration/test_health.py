@@ -11,6 +11,7 @@ async def test_health_reports_database_and_providers(client: httpx.AsyncClient) 
     assert body["database"] == "ok"
     assert body["llm_provider"] == "fake:extractive"
     assert body["embedding_provider"].startswith("fake:hashing")
+    assert body["reranker"] is None
 
 
 async def test_openapi_schema_lists_all_endpoints(client: httpx.AsyncClient) -> None:

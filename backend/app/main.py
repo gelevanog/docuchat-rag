@@ -30,6 +30,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "startup",
             llm=container.chat_model.name,
             embeddings=container.embedder.name,
+            reranker=container.reranker.name if container.reranker else None,
             environment=settings.environment,
         )
         try:

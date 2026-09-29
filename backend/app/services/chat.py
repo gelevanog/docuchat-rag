@@ -64,6 +64,7 @@ def to_sources(chunks: Sequence[RetrievedChunk]) -> list[SourceOut]:
             snippet=make_snippet(chunk.content),
             content=chunk.content,
             score=round(chunk.score, 6),
+            rerank_score=None if chunk.rerank_score is None else round(chunk.rerank_score, 6),
         )
         for index, chunk in enumerate(chunks, start=1)
     ]

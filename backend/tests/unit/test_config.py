@@ -10,6 +10,7 @@ def test_defaults_run_without_api_keys() -> None:
     settings = Settings(_env_file=None)
     assert settings.llm_provider == "fake"
     assert settings.embedding_provider == "fake"
+    assert settings.reranker == "none"
 
 
 def test_cors_origins_accept_comma_separated_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -22,6 +23,20 @@ def test_real_providers_require_keys() -> None:
         Settings(_env_file=None, embedding_provider="openai")
     with pytest.raises(ValidationError, match="ANTHROPIC_API_KEY"):
         Settings(_env_file=None, llm_provider="anthropic")
+
+
+def test_rerank_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RERANKER", "cross-encoder")
+    monkeypatch.setenv("RERANK_CANDIDATES", "25")
+    monkeypatch.setenv("RERANK_CACHE_DIR", "")
+    settings = Settings(_env_file=None)
+    assert settings.reranker == "cross-encoder"
+    assert settings.rerank_candidates == 25
+    assert settings.rerank_cache_dir is None
+    with pytest.raises(ValidationError, match="RERANKER=llm"):
+        Settings(_env_file=None, reranker="llm")
+    with pytest.raises(ValidationError, match="reranker"):
+        Settings(_env_file=None, reranker="bm25")
 
 
 def test_overlap_must_be_smaller_than_chunk_size() -> None:
