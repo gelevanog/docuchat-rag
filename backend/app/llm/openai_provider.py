@@ -7,8 +7,9 @@ from collections.abc import AsyncIterator, Sequence
 import openai
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
+from pydantic import ValidationError
 
-from app.llm.base import ChatMessage, LLMError
+from app.llm.base import ChatMessage, LLMError, SchemaT
 
 
 def _to_openai_messages(
@@ -54,6 +55,28 @@ class OpenAIChatModel:
         except openai.APIError as exc:
             raise LLMError(f"OpenAI chat request failed: {exc}") from exc
         return response.choices[0].message.content or ""
+
+    async def parse(
+        self, system: str, messages: Sequence[ChatMessage], schema: type[SchemaT]
+    ) -> SchemaT:
+        try:
+            response = await self._client.chat.completions.parse(
+                model=self._model,
+                messages=_to_openai_messages(system, messages),
+                response_format=schema,
+            )
+        except (
+            openai.APIError,
+            openai.LengthFinishReasonError,
+            openai.ContentFilterFinishReasonError,
+        ) as exc:
+            raise LLMError(f"OpenAI structured request failed: {exc}") from exc
+        except ValidationError as exc:
+            raise LLMError(f"OpenAI reply does not match {schema.__name__}: {exc}") from exc
+        message = response.choices[0].message
+        if message.parsed is None:
+            raise LLMError(f"OpenAI returned no structured output: {message.refusal or 'empty'}")
+        return message.parsed
 
 
 class OpenAIEmbeddingModel:

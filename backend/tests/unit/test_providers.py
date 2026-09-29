@@ -6,10 +6,13 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+from pydantic import BaseModel
+
 from app.core.config import Settings
 from app.llm.anthropic_provider import REFUSAL_NOTICE, AnthropicChatModel
-from app.llm.base import ChatMessage
-from app.llm.factory import build_chat_model, build_embedding_model
+from app.llm.base import ChatMessage, LLMError
+from app.llm.factory import build_chat_model, build_embedding_model, build_structured_model
 from app.llm.fake import FakeChatModel, HashingEmbeddingModel
 from app.llm.openai_provider import OpenAIChatModel, OpenAIEmbeddingModel
 
@@ -131,3 +134,81 @@ def test_factory_builds_real_providers_from_settings() -> None:
     assert isinstance(chat, AnthropicChatModel)
     assert chat.name == "anthropic:claude-sonnet-5"
     assert isinstance(build_embedding_model(settings), OpenAIEmbeddingModel)
+
+
+class _Verdict(BaseModel):
+    supported: bool
+
+
+class _AnthropicParseClient:
+    def __init__(self, parsed: _Verdict | None, stop_reason: str = "end_turn") -> None:
+        self.kwargs: dict[str, Any] = {}
+
+        async def parse(**kwargs: Any) -> SimpleNamespace:
+            self.kwargs = kwargs
+            return SimpleNamespace(stop_reason=stop_reason, parsed_output=parsed)
+
+        self.messages = SimpleNamespace(parse=parse)
+
+
+async def test_anthropic_parse_requests_the_schema_and_returns_the_parsed_output() -> None:
+    client = _AnthropicParseClient(_Verdict(supported=True))
+    model = AnthropicChatModel(client, "claude-sonnet-5", max_tokens=1000, effort="high")  # type: ignore[arg-type]
+    assert await model.parse("SYSTEM", MESSAGES, _Verdict) == _Verdict(supported=True)
+    assert client.kwargs["output_format"] is _Verdict
+    assert client.kwargs["model"] == "claude-sonnet-5"
+    assert client.kwargs["system"] == "SYSTEM"
+    assert client.kwargs["output_config"] == {"effort": "high"}
+    assert "temperature" not in client.kwargs
+
+
+async def test_anthropic_parse_raises_on_refusal_or_missing_output() -> None:
+    refused = AnthropicChatModel(
+        _AnthropicParseClient(None, stop_reason="refusal"),  # type: ignore[arg-type]
+        "claude-sonnet-5",
+        max_tokens=1000,
+        effort="low",
+    )
+    with pytest.raises(LLMError, match="declined"):
+        await refused.parse("SYSTEM", MESSAGES, _Verdict)
+    empty = AnthropicChatModel(_AnthropicParseClient(None), "m", max_tokens=1000, effort="low")  # type: ignore[arg-type]
+    with pytest.raises(LLMError, match="no structured output"):
+        await empty.parse("SYSTEM", MESSAGES, _Verdict)
+
+
+class _OpenAIParseClient:
+    def __init__(self, parsed: _Verdict | None, refusal: str | None = None) -> None:
+        self.kwargs: dict[str, Any] = {}
+
+        async def parse(**kwargs: Any) -> SimpleNamespace:
+            self.kwargs = kwargs
+            message = SimpleNamespace(parsed=parsed, refusal=refusal)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        self.chat = SimpleNamespace(completions=SimpleNamespace(parse=parse))
+
+
+async def test_openai_parse_uses_the_schema_as_response_format() -> None:
+    client = _OpenAIParseClient(_Verdict(supported=False))
+    model = OpenAIChatModel(client, "gpt-test")  # type: ignore[arg-type]
+    assert await model.parse("SYSTEM", MESSAGES, _Verdict) == _Verdict(supported=False)
+    assert client.kwargs["response_format"] is _Verdict
+    assert client.kwargs["messages"][0] == {"role": "system", "content": "SYSTEM"}
+
+
+async def test_openai_parse_surfaces_refusals() -> None:
+    model = OpenAIChatModel(_OpenAIParseClient(None, refusal="I can't"), "gpt-test")  # type: ignore[arg-type]
+    with pytest.raises(LLMError, match="I can't"):
+        await model.parse("SYSTEM", MESSAGES, _Verdict)
+
+
+def test_structured_models_follow_the_configured_provider() -> None:
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key="sk-ant-test",
+        openai_api_key="sk-test",
+    )
+    assert build_structured_model(settings, "anthropic").name == "anthropic:claude-sonnet-5"
+    assert build_structured_model(settings, "openai", "gpt-judge").name == "openai:gpt-judge"
+    with pytest.raises(ValueError, match="fake provider"):
+        build_structured_model(settings, "fake")

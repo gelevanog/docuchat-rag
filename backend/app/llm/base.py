@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, TypeVar, runtime_checkable
+
+from pydantic import BaseModel
 
 Role = Literal["user", "assistant"]
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,24 @@ class ChatModel(Protocol):
 
     async def complete(self, system: str, messages: Sequence[ChatMessage]) -> str:
         """Return the full assistant reply (used for short auxiliary tasks)."""
+        ...
+
+
+@runtime_checkable
+class StructuredModel(Protocol):
+    """A chat model that can return a reply validated against a Pydantic schema.
+
+    Implemented by the OpenAI and Anthropic adapters; used for LLM re-ranking and the
+    answer-quality judge. The offline `fake` provider has heuristic stand-ins instead.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    async def parse(
+        self, system: str, messages: Sequence[ChatMessage], schema: type[SchemaT]
+    ) -> SchemaT:
+        """Return the reply as a validated `schema` instance; raise `LLMError` otherwise."""
         ...
 
 
