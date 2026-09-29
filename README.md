@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/454d1c36-aa8d-488e-8944-5a7ad7b84bcf
 
 ## Why DocuChat?
 
-Teams keep their knowledge in handbooks, policies, contracts and product docs that nobody has time to search. A general chatbot will answer confidently but it can't see your files, and it may invent details. DocuChat answers **only from the documents you upload**. Every sentence points to the exact passage (file, page and section) it came from, so anyone can check the answer in one click. When the documents don't contain the answer, it says so and doesn't guess. DocuChat is self-hosted, so your documents stay on your own infrastructure, and it can use OpenAI, Anthropic Claude or, for demos and tests, a built-in offline model that needs no API key.
+Teams keep their knowledge in handbooks, policies, contracts and product docs that nobody has time to search. A general chatbot will answer confidently but it can't see your files, and it may invent details. DocuChat answers **only from the documents you upload**. Every sentence points to the exact passage (file, page and section) it came from, so anyone can check the answer in one click. When the documents don't contain the answer, it says so and doesn't guess. DocuChat is self-hosted, so your documents stay on your own infrastructure, and it can use OpenAI, Anthropic Claude, hundreds of models (including free ones) via OpenRouter or, for demos and tests, a built-in offline model that needs no API key.
 
 ## Features
 
@@ -29,9 +29,9 @@ Teams keep their knowledge in handbooks, policies, contracts and product docs th
 - **Re-ranking after fusion (optional).** A re-ranker re-orders the top 20 fused candidates before the best ones go to the model. Choose a local ms-marco MiniLM **cross-encoder** (ONNX Runtime on CPU, no PyTorch or GPU), an **LLM** grader that uses the configured chat model, or a deterministic lexical one for tests. Source cards show the re-ranker's score.
 - **Streamed, cited answers.** Tokens stream over Server-Sent Events. The model is told to cite sources as `[1]`, `[2]`, and the API returns only the sources the answer actually cites.
 - **Conversations.** Chat history is stored in Postgres. Follow-up questions like *"and for part-timers?"* are rewritten into standalone search queries before retrieval.
-- **Provider-agnostic LLM layer.** OpenAI (chat and embeddings), Anthropic Claude (chat) and a deterministic `fake` provider. You choose with environment variables and no code changes.
+- **Provider-agnostic LLM layer.** OpenAI (chat and embeddings), Anthropic Claude (chat), [OpenRouter](https://openrouter.ai) (chat and embeddings, including free models, with model fallbacks, request pacing and retries) and a deterministic `fake` provider. You choose with environment variables and no code changes.
 - **Retrieval evaluation.** `scripts/eval.py` reports hit-rate@k and MRR for vector-only, keyword-only and hybrid retrieval, and for hybrid plus each re-ranker, against 30 golden questions (12 of them deliberately paraphrased).
-- **Answer-quality evaluation.** `scripts/eval_answers.py` runs the full pipeline, and an LLM judge (OpenAI or Claude, with schema-validated structured output) scores every answer for **faithfulness**, **citation precision** and **relevance**. You get per-question explanations, a terminal table and a JSON report. An offline heuristic judge runs the same pipeline in CI.
+- **Answer-quality evaluation.** `scripts/eval_answers.py` runs the full pipeline, and an LLM judge (OpenAI, Claude or any OpenRouter model, with schema-validated structured output) scores every answer for **faithfulness**, **citation precision** and **relevance**. You get per-question explanations, a terminal table and a JSON report. An offline heuristic judge runs the same pipeline in CI.
 - **Production basics.** Alembic migrations, structured JSON logs, health check, OpenAPI docs, Docker Compose and a GitHub Actions CI pipeline.
 
 ## Architecture
@@ -140,6 +140,7 @@ cp .env.example .env
 | OpenAI for everything | `LLM_PROVIDER=openai`, `EMBEDDING_PROVIDER=openai`, `OPENAI_API_KEY=sk-...` |
 | Claude answers, OpenAI embeddings | `LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY=sk-ant-...`, `EMBEDDING_PROVIDER=openai`, `OPENAI_API_KEY=sk-...` |
 | Claude answers, offline embeddings | `LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY=sk-ant-...`, `EMBEDDING_PROVIDER=fake` |
+| Free models via OpenRouter (see below) | `LLM_PROVIDER=openrouter`, `EMBEDDING_PROVIDER=openrouter`, `EMBEDDING_DIM=1024`, `OPENROUTER_API_KEY=sk-or-...` |
 | Self-hosted / OpenAI-compatible server (vLLM, Ollama, LiteLLM) | `LLM_PROVIDER=openai`, `OPENAI_BASE_URL=http://.../v1`, `OPENAI_CHAT_MODEL=...` |
 
 ```bash
@@ -147,6 +148,30 @@ docker compose up --build -d
 ```
 
 The embedding size is fixed when the database is first migrated (`EMBEDDING_DIM`, default 1536, which matches `text-embedding-3-small`). If you switch to an embedding model with a different size, recreate the database (`docker compose down -v`) and re-upload your documents. Anthropic has no embeddings API, so pair Claude with OpenAI or the offline embedder.
+
+### Run with free models via OpenRouter
+
+[OpenRouter](https://openrouter.ai) gives you one API key for hundreds of models, and some of them are free. DocuChat supports it as its own provider for chat, embeddings, the LLM re-ranker and the judge. You don't need a credit card to try the full pipeline with real models:
+
+```bash
+# .env
+LLM_PROVIDER=openrouter
+EMBEDDING_PROVIDER=openrouter
+EMBEDDING_DIM=1024            # liquid/lfm-2.5-embedding-350m returns 1024-d vectors
+OPENROUTER_API_KEY=sk-or-...
+JUDGE_PROVIDER=openrouter     # for scripts/eval_answers.py
+JUDGE_MODEL=dots-studio/dots-3-note-preview:free
+```
+
+The defaults (`.env.example`) are models that were free and working on 2026-09-29: `nvidia/nemotron-3-super-120b-a12b:free` for chat, falling back to `google/gemma-4-31b-it:free` and `qwen/qwen3.8-27b:free`, plus `liquid/lfm-2.5-embedding-350m:free` for embeddings. Free models come and go, so check [openrouter.ai/models](https://openrouter.ai/models?max_price=0) if one disappears. The `EMBEDDING_DIM` is fixed when the database is created. An existing 1536-d database needs `docker compose down -v`, or a separate database.
+
+Free models are rate-limited: roughly 20 requests per minute, plus a daily cap. Upstream providers also return `429 rate-limited upstream` at busy times. The provider handles this in three ways:
+
+- **Model fallbacks.** The chat request carries OpenRouter's `models` list (`OPENROUTER_FALLBACK_MODELS`, at most 2), so a busy or retired primary model is replaced by the next one. The replacement is logged as `model_fallback`. A judge configured with an explicit `JUDGE_MODEL` gets no fallbacks, so its scores always come from the model it names.
+- **Pacing.** All OpenRouter clients in the process (chat, judge, embeddings) share one `RequestPacer`. It starts requests at least `OPENROUTER_MIN_INTERVAL_S` (3 s) apart.
+- **Retries.** 429, 5xx and connection errors are retried up to `OPENROUTER_RETRIES` times with exponential backoff (5 s, 10 s, 20 s…). A `Retry-After` header takes precedence.
+
+`EMBEDDING_CACHE_PATH` adds a small on-disk embedding cache. With it, re-ingesting the same documents or re-running the evaluations spends no quota on embeddings. The optional `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` are sent as the `HTTP-Referer` / `X-Title` attribution headers. Answers from small free models are noticeably weaker than from GPT-5 or Claude. See the [measured results](#results-with-real-models-openrouter-free-tier-2026-09-29) below.
 
 ### Re-ranking
 
@@ -173,8 +198,8 @@ All settings are environment variables. They are read by `backend/app/core/confi
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `fake` | Chat model: `fake`, `openai` or `anthropic` |
-| `EMBEDDING_PROVIDER` | `fake` | Embeddings: `fake` or `openai` |
+| `LLM_PROVIDER` | `fake` | Chat model: `fake`, `openai`, `anthropic` or `openrouter` |
+| `EMBEDDING_PROVIDER` | `fake` | Embeddings: `fake`, `openai` or `openrouter` |
 | `EMBEDDING_DIM` | `1536` | Vector size stored in pgvector (fixed at first migration) |
 | `OPENAI_API_KEY` | - | Required when an OpenAI provider is selected |
 | `OPENAI_BASE_URL` | - | Optional OpenAI-compatible endpoint |
@@ -184,6 +209,14 @@ All settings are environment variables. They are read by `backend/app/core/confi
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` | Claude model |
 | `ANTHROPIC_MAX_TOKENS` | `16000` | Upper bound on answer length |
 | `ANTHROPIC_EFFORT` | `medium` | Claude effort level: `low`, `medium` or `high` |
+| `OPENROUTER_API_KEY` | - | Required when an OpenRouter provider is selected |
+| `OPENROUTER_CHAT_MODEL` | `nvidia/nemotron-3-super-120b-a12b:free` | OpenRouter chat model |
+| `OPENROUTER_FALLBACK_MODELS` | `google/gemma-4-31b-it:free,qwen/qwen3.8-27b:free` | Up to 2 fallback chat models (comma-separated) |
+| `OPENROUTER_EMBEDDING_MODEL` | `liquid/lfm-2.5-embedding-350m:free` | OpenRouter embedding model (1024-d) |
+| `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` | - / `DocuChat` | Optional `HTTP-Referer` / `X-Title` attribution headers |
+| `OPENROUTER_MIN_INTERVAL_S` | `3` | Minimum spacing between OpenRouter requests (free tier: ~20/min) |
+| `OPENROUTER_RETRIES` / `OPENROUTER_BACKOFF_S` | `4` / `5` | Retries for 429/5xx/connection errors and the first backoff (doubles) |
+| `EMBEDDING_CACHE_PATH` | - | Optional JSON file caching embeddings by model and text |
 | `FAKE_STREAM_DELAY_MS` | `12` | Delay between streamed words of the fake provider |
 | `CHUNK_SIZE_TOKENS` | `400` | Target chunk size (cl100k_base tokens) |
 | `CHUNK_OVERLAP_TOKENS` | `60` | Overlap between consecutive chunks |
@@ -199,8 +232,8 @@ All settings are environment variables. They are read by `backend/app/core/confi
 | `RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Cross-encoder (any [fastembed](https://github.com/qdrant/fastembed) cross-encoder) |
 | `RERANK_CACHE_DIR` | - | Where the cross-encoder is stored (`/app/.models` in the Docker image) |
 | `BACKEND_EXTRAS` | - | Docker build: `rerank` installs the cross-encoder runtime and model |
-| `JUDGE_PROVIDER` | `fake` | Answer-quality judge for `scripts/eval_answers.py`: `fake`, `openai` or `anthropic` |
-| `JUDGE_MODEL` | - | Judge model; defaults to `OPENAI_CHAT_MODEL` / `ANTHROPIC_MODEL` |
+| `JUDGE_PROVIDER` | `fake` | Answer-quality judge for `scripts/eval_answers.py`: `fake`, `openai`, `anthropic` or `openrouter` |
+| `JUDGE_MODEL` | - | Judge model; defaults to the provider's chat model |
 | `DATABASE_URL` | `postgresql+asyncpg://docuchat:docuchat@localhost:5432/docuchat` | Async SQLAlchemy URL (set automatically in Compose) |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `docuchat` | Database credentials used by Compose |
 | `DB_ECHO` | `false` | Log SQL statements |
@@ -286,13 +319,13 @@ docuchat/
 
 **Hybrid search fused with Reciprocal Rank Fusion.** Dense vectors are good at paraphrase (*"holiday"* finds *"vacation"*). They are weak on exact tokens like product names, error codes, amounts or `CAMT.053`, and that's where keyword search shines. Running both and fusing them recovers the misses of each. RRF combines the two lists using **ranks only**. Cosine distances and `ts_rank` scores live on unrelated scales and can't be meaningfully added, so the rank-based approach needs no score normalisation or tuning. Both searches run inside PostgreSQL (HNSW and GIN indexes), so there is no separate vector database to operate. The [evaluation](#evaluation) below shows hybrid ranking the answer higher (hit@1, MRR) than either retriever on its own.
 
-**Re-rank after fusion, not instead of it.** Vector and keyword search score the query and each chunk separately. That is what makes them cheap enough to scan the whole corpus, but it also makes them imprecise. A cross-encoder reads the query and the chunk together, which is far more precise and costs one model pass per pair. So the work is split: hybrid search stays broad and cheap (recall), and the cross-encoder spends about 0.2 s of CPU on only the top 20 fused candidates (precision). The pool caps what re-ranking can do, because it can only reorder what fusion found, so the evaluation also reports how often the answer was in the pool. The LLM re-ranker grades all candidates in one structured call and falls back to the fused order if the call fails, so a flaky provider degrades ranking instead of breaking chat. All re-rankers return scores in [0, 1] and keep the fused order for ties. Re-ranking is off by default, and on easy, keyword-friendly questions it adds little (see [results](#re-ranking-results)).
+**Re-rank after fusion, not instead of it.** Vector and keyword search score the query and each chunk separately. That is what makes them cheap enough to scan the whole corpus, but it also makes them imprecise. A cross-encoder reads the query and the chunk together, which is far more precise and costs one model pass per pair. So the work is split: hybrid search stays broad and cheap (recall), and the cross-encoder spends about 0.2 s of CPU on only the top 20 fused candidates (precision). The pool caps what re-ranking can do, because it can only reorder what fusion found, so the evaluation also reports how often the answer was in the pool. The LLM re-ranker grades all candidates in one structured call and falls back to the fused order if the call fails, so a flaky provider degrades ranking instead of breaking chat. All re-rankers return scores in [0, 1] and keep the fused order for ties. Re-ranking is off by default. On easy questions it adds little, and with a good semantic embedder even the cross-encoder's gain shrinks (see [results](#re-ranking-results)).
 
 **Recursive, token-aware chunking with overlap.** Chunks are measured in model tokens rather than characters, so they fit embedding and context limits predictably. The splitter prefers natural boundaries (paragraph, then line, then sentence, then word) and falls back to raw tokens only for pathological input. A 60-token overlap means a fact that straddles a boundary still appears whole in at least one chunk. Chunks never cross a page or section boundary, which keeps citations exact. Each chunk is embedded together with its document title and section heading, so a chunk that says "25 days" also carries the context that it's about vacation.
 
 **Citations are part of the contract, not decoration.** The prompt numbers every source and requires `[n]` citations, or an explicit "I don't know" when the sources don't cover the question. The server parses the citations and returns only the sources actually used, so the UI can render verifiable source cards. Source text is escaped and marked as data, which makes it harder for instructions hidden inside a document to take over the prompt. This makes answers auditable and exposes hallucinations instead of hiding them.
 
-**A small provider interface.** The application depends on two protocols, `ChatModel` (`stream`, `complete`) and `EmbeddingModel` (`embed`), and never on a vendor SDK directly. Adding a provider (Azure OpenAI, Bedrock, a local model) is one adapter class. The deterministic `fake` provider is what makes the test suite, CI and the demo run with no keys, no network and no cost.
+**A small provider interface.** The application depends on two protocols, `ChatModel` (`stream`, `complete`) and `EmbeddingModel` (`embed`), and never on a vendor SDK directly. Adding a provider (Azure OpenAI, Bedrock, a local model) is one adapter class. OpenRouter didn't even need that: it reuses the OpenAI adapter with a different base URL, a model-fallback list and a shared request pacer. The deterministic `fake` provider is what makes the test suite, CI and the demo run with no keys, no network and no cost.
 
 **Follow-up rewriting before retrieval.** *"And for adoptive parents?"* retrieves nothing useful on its own. With a real LLM the question is rewritten into a standalone query using the chat history. The offline provider uses a heuristic instead: it anchors short or "and/what about…" questions to the previous question.
 
@@ -373,31 +406,32 @@ Mean re-ranking latency, cross-encoder: 186.5 ms/query
 
 #### Re-ranking results
 
-Chunk-level results from the run above, from the same command with `--tag paraphrase`, and with `RERANK_MODEL=Xenova/ms-marco-MiniLM-L-12-v2`. Latency is for 20 candidates on CPU.
+The same harness was run with two embedders. The offline `fake` embedder is shown above. The second is a real semantic embedder, `liquid/lfm-2.5-embedding-350m:free` via [OpenRouter](#run-with-free-models-via-openrouter), run on 2026-09-29 (`EMBEDDING_PROVIDER=openrouter uv run python scripts/eval.py --rerank fake cross-encoder`, plus `--tag paraphrase` and `RERANK_MODEL=Xenova/ms-marco-MiniLM-L-12-v2`). Both runs use the same local cross-encoders and the same CPU. The table shows chunk-level results. Re-ranking latency is for 20 candidates.
 
-| Questions | Retrieval | hit@1 | hit@3 | hit@5 | MRR | Re-rank latency |
-|---|---|---|---|---|---|---|
-| original 18 | hybrid | 0.889 | 1.000 | 1.000 | 0.944 | |
-| original 18 | hybrid + lexical or MiniLM-L-6 | 1.000 | 1.000 | 1.000 | 1.000 | |
-| 12 paraphrased | hybrid | 0.333 | 0.500 | 0.833 | 0.483 | |
-| 12 paraphrased | hybrid + lexical (`fake`) | 0.333 | 0.583 | 0.833 | 0.508 | |
-| 12 paraphrased | hybrid + MiniLM-L-6 cross-encoder | **0.583** | **0.833** | 0.917 | 0.725 | |
-| 12 paraphrased | hybrid + MiniLM-L-12 cross-encoder | **0.583** | **0.833** | **1.000** | **0.750** | |
-| all 30 | hybrid | 0.667 | 0.800 | 0.933 | 0.760 | |
-| all 30 | hybrid + lexical (`fake`) | 0.733 | 0.833 | 0.933 | 0.803 | < 1 ms |
-| all 30 | hybrid + MiniLM-L-6 cross-encoder (default) | 0.833 | 0.933 | 0.967 | 0.890 | ~190 ms |
-| all 30 | hybrid + MiniLM-L-12 cross-encoder | 0.833 | 0.933 | 1.000 | 0.900 | ~390 ms |
+| Questions | Retrieval | hit@1 | hit@3 | hit@5 | MRR | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|---|---|---|---|---|
+| | *embedder →* | *offline* | | | | *OpenRouter LFM2.5* | | | |
+| original 18 | hybrid | 0.889 | 1.000 | 1.000 | 0.944 | 0.889 | 1.000 | 1.000 | 0.944 |
+| original 18 | hybrid + any re-ranker | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| 12 paraphrased | hybrid | 0.333 | 0.500 | 0.833 | 0.483 | 0.500 | 0.917 | 1.000 | 0.697 |
+| 12 paraphrased | hybrid + lexical (`fake`) | 0.333 | 0.583 | 0.833 | 0.508 | **0.667** | 0.917 | 1.000 | **0.781** |
+| 12 paraphrased | hybrid + MiniLM-L-6 | **0.583** | **0.833** | 0.917 | 0.725 | 0.583 | 0.833 | 1.000 | 0.742 |
+| 12 paraphrased | hybrid + MiniLM-L-12 | **0.583** | **0.833** | **1.000** | **0.750** | 0.583 | 0.833 | 1.000 | 0.750 |
+| all 30 | hybrid | 0.667 | 0.800 | 0.933 | 0.760 | 0.733 | 0.967 | 1.000 | 0.846 |
+| all 30 | hybrid + lexical (`fake`), < 1 ms | 0.733 | 0.833 | 0.933 | 0.803 | **0.867** | 0.967 | 1.000 | **0.912** |
+| all 30 | hybrid + MiniLM-L-6, ~0.2 s | **0.833** | **0.933** | 0.967 | 0.890 | 0.833 | 0.933 | 1.000 | 0.897 |
+| all 30 | hybrid + MiniLM-L-12, ~0.4 s | **0.833** | **0.933** | **1.000** | **0.900** | 0.833 | 0.933 | 1.000 | 0.900 |
 
 What this shows, and what it doesn't:
 
-- **On the original questions, re-ranking has almost nothing to fix.** Hybrid retrieval already ranks the answering chunk first for 16 of 18. Both re-rankers move the other two from rank 2 to rank 1. Two questions are too few to call that a difference.
-- **On the paraphrased questions, the cross-encoder earns its cost.** It lifts chunk hit@1 from 4/12 to 7/12 and MRR from 0.48 to 0.73. The lexical re-ranker barely moves anything (MRR 0.51). It uses the same word-overlap signal as the retrievers it re-orders, so it can't recover a match they missed. It's in the table as a control. Its real job is testing.
-- **It is not better on every question.** The cross-encoder pushes two answers down. *"Is it cheaper if I pay for a whole year up front?"* falls from rank 5 to outside the top 5. *"Can I read work email on my own phone?"* goes from 1 to 2. *"How many people can use the mid-tier plan?"* stays at rank 2, because nothing here knows that "mid-tier" means the Team plan.
-- **The bigger model is not worth it here.** MiniLM-L-12 improves MRR from 0.890 to 0.900 and reaches hit@5 1.000, at twice the latency.
-- **The gap is probably overstated.** The offline embedder is itself lexical (hashed bag of words), so paraphrases defeat both retrievers. A semantic embedder such as `text-embedding-3-small` handles paraphrase on its own and should shrink the cross-encoder's margin. I couldn't measure that, or the `llm` re-ranker, because no API keys were available when this was built.
-- **The sample is tiny.** 30 questions over 3 short documents, so one question moves hit@1 by 3.3 points. Treat this as the direction of the effect, not a benchmark. The answering chunk was inside the 20-candidate pool for all 30 questions, so the pool size was not the bottleneck.
+- **On the original questions, re-ranking has almost nothing to fix.** Hybrid retrieval already ranks the answering chunk first for 16 of 18, whichever embedder is used. Every re-ranker moves the other two from rank 2 to rank 1. Two questions are too few to call that a difference.
+- **With the lexical offline embedder, the cross-encoder earns its cost.** On the paraphrased questions it lifts hit@1 from 4/12 to 7/12 and MRR from 0.48 to 0.73. The lexical re-ranker barely helps there (0.51), because it uses the same word-overlap signal as the retrievers it re-orders.
+- **A semantic embedder closes most of that gap by itself.** With LFM2.5 embeddings, plain hybrid retrieval reaches MRR 0.70 on the paraphrases and hit@5 1.000 overall. The cross-encoder's results barely change between embedders (0.890 → 0.897). It re-scores the same 20-candidate pool, and that pool contained the answer for all 30 questions both times, so the fused order it receives hardly matters.
+- **On top of real embeddings, the cheap lexical re-ranker scored best.** It reached MRR 0.912, against 0.897 for the cross-encoder. Semantic hybrid retrieval already puts the right chunk near the top, and term coverage, including the section heading, then breaks ties well. The ms-marco MiniLM models were trained on web search passages and misjudge a few policy passages: *"Is there money for setting up a workspace at home?"* drops from rank 2 to 5. The margin is half a question on 30, which is within noise. Don't read it as "lexical beats cross-encoders" in general.
+- **The bigger cross-encoder is not worth it here.** MiniLM-L-12 changes MRR by at most 0.01 and doubles the latency.
+- **The sample is tiny.** 30 questions over 3 short documents, so one question moves hit@1 by 3.3 points. Treat these numbers as the direction of an effect, not a benchmark. The `llm` re-ranker was implemented and unit-tested, but not measured here to stay within the free tier's daily request budget.
 
-That's why `RERANKER` defaults to `none`. The cross-encoder is worth turning on when users phrase questions differently from the documents and ~0.2 s per question is acceptable. The useful part is the harness. Point `--dataset` and `--docs` at a client's real documents and questions, then compare re-rankers, chunk sizes, embedding models or `RRF_K` on facts instead of impressions. `--json` prints machine-readable results for CI.
+That's why `RERANKER` defaults to `none`. Whether a re-ranker pays off depends on the embedder and on how differently users phrase their questions from the documents, so measure it on your own data. That is what the harness is for. Point `--dataset` and `--docs` at a client's real documents and questions, then compare re-rankers, chunk sizes, embedding models or `RRF_K` on facts instead of impressions. `--json` prints machine-readable results for CI.
 
 ### Answer quality
 
@@ -413,13 +447,65 @@ That's why `RERANKER` defaults to `none`. The cross-encoder is worth turning on 
 uv run python scripts/eval_answers.py                          # offline heuristic judge
 JUDGE_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... uv run python scripts/eval_answers.py
 uv run python scripts/eval_answers.py --judge openai --judge-model gpt-5 --tag paraphrase
+uv run python scripts/eval_answers.py --judge openrouter --judge-model dots-studio/dots-3-note-preview:free
 ```
 
 The judge gets the question, the numbered sources, and the answer split into statements with their citations. It returns a verdict per statement and per citation, plus a short explanation, all as a schema-validated `AnswerVerdict`. The scores are computed from those verdicts in code (`app/evaluation/judge.py`). The terminal shows a table and the judge's explanation for every flagged answer. The JSON report (default `backend/data/eval/answer-quality.json`) holds every answer with its statement-level verdicts. Use a different, ideally stronger, model as the judge than the one writing the answers. Otherwise the model is grading its own work.
 
-> **No real-judge results yet.** No OpenAI or Anthropic API key was available while this was built. The LLM judge (and the `llm` re-ranker) are covered by unit tests against stub clients, but they have not been run against a live model. The output below comes from the **offline heuristic judge scoring the offline extractive model**. It shows the report format and that the pipeline runs end to end. It is not a measurement of answer quality.
+#### Results with real models (OpenRouter free tier, 2026-09-29)
 
-Example output, **`fake` judge on `fake` answers** (`uv run python scripts/eval_answers.py`, shortened):
+| Role | Model |
+|---|---|
+| Answers | `nvidia/nemotron-3-super-120b-a12b:free`, with fallbacks `google/gemma-4-31b-it:free`, `qwen/qwen3.8-27b:free` (not needed in this run) |
+| Judge | `dots-studio/dots-3-note-preview:free`: a different model family, and no fallbacks |
+| Retrieval | `liquid/lfm-2.5-embedding-350m:free` embeddings, hybrid search, no re-ranker, top-6 |
+
+```bash
+# LLM_PROVIDER / EMBEDDING_PROVIDER / JUDGE_PROVIDER=openrouter, EMBEDDING_DIM=1024
+uv run python scripts/eval_answers.py
+uv run python scripts/eval_answers.py --resume    # re-run only the questions that errored
+```
+
+Real output (shortened, local path replaced; the last of three runs, see below):
+
+```text
+Judge: llm:openrouter:dots-studio/dots-3-note-preview:free | answers: openrouter:nvidia/nemotron-3-super-120b-a12b:free | retrieval: openrouter:liquid/lfm-2.5-embedding-350m:free, reranker none, top-6 | questions: 30 (29 resumed from data/eval/answer-quality.json)
+
+question                                                          faithful  cite-prec  relevance
+How many vacation days do full-time employees get per year?           1.00       1.00          5
+Can I carry unused holiday over to next year?                         1.00       1.00          5
+…                                                                      (27 more rows, all 1.00 / 1.00 / 5)
+
+faithfulness          1.00   (35/35 claims supported)
+citation precision    1.00   (30/30 citations support their claim)
+relevance (1-5)       5.00
+abstained                0   of 29 answers
+model errors             1   (excluded from the scores)
+```
+
+A typical answer and the judge's verdict:
+
+> **Q:** How many people can use the mid-tier plan?
+> **A:** The mid‑tier (Team) plan supports up to five users. [1]
+> **Judge:** The answer correctly states that the mid‑tier (Team) plan supports up to five users, which is directly stated in source 1. The response is grounded and fully addresses the question.
+
+**Is the judge just lenient?** Perfect scores prove little unless the judge can fail an answer. So I planted three errors in real answers and ran the same judge again (`dots-3-note-preview`, 3 calls). It caught all three:
+
+| Planted error | Faithfulness | Citation precision | Relevance | Judge's explanation (shortened) |
+|---|---|---|---|---|
+| Allowance changed from 600 to 900 EUR | 0.50 | 0.00 | 3 | "incorrectly states … 900 EUR, whereas Source 2 explicitly specifies … 600 EUR" |
+| Correct claim, citation moved to a source without it | 1.00 | 0.00 | 5 | "cites source 2, which only mentions the free trial … The user limit is actually stated in source 1" |
+| Added "file a police report within 24 hours [2]" | 0.50 | 0.50 | 3 | "the second statement about filing a police report … is not mentioned in any source" |
+
+What the real run shows, and its limits:
+
+- **On this dataset, the free 120B model answers correctly, briefly and with correct citations.** Answers average 112 characters. The model resolved paraphrases the retrievers only half matched, such as "mid-tier plan" → Team plan → five users. That is largely a ceiling effect. The documents are short and clean, and retrieval already put the answering chunk in the top 5 for every question. Harder, messier documents would separate models much more.
+- **Free models fail, so the pipeline has to cope.** On the first pass, 7 of 30 answers failed with *"Upstream error from Nvidia: Service temporarily overloaded"*. OpenRouter sent that as an error event inside an HTTP 200 stream, so neither its model fallbacks nor HTTP-level retries applied. The chat adapter now reads each stream up to its first token inside the request pacer and retries such events (nothing has reached the user at that point). The `--resume` run needed 2 such retries and answered all 7. One question, *"Can I paste customer data into ChatGPT or other AI tools?"*, was rejected by the judge's upstream provider with an opaque `400 bad request` on both attempts, so it is reported as an error and excluded, not scored.
+- **This is one run with a small preview model as the judge.** The calibration shows it catches blatant errors, not that it catches subtle ones, and there is no variance estimate. Before making decisions on these numbers, use a stronger judge (GPT-5, Claude) and a bigger, harder question set. Total cost of every real call in this README: about 115 free-tier requests, including embeddings and a few capability probes.
+
+#### Offline example
+
+For comparison, the **offline heuristic judge scoring the offline extractive model** (`uv run python scripts/eval_answers.py` with the defaults, shortened). It runs without keys, shows the report format and proves the pipeline works end to end. It does not measure answer quality:
 
 ```text
 Judge: fake:token-overlap | answers: fake:extractive | retrieval: fake:hashing-1536, reranker none, top-6 | questions: 30
@@ -450,13 +536,13 @@ How to read this: the extractive model copies sentences from its sources and cit
 
 ```bash
 make test-db     # throwaway pgvector container on localhost:55433
-make test        # 114 tests: unit + API/integration, all offline (no keys, no model downloads)
+make test        # 128 tests: unit + API/integration, all offline (no keys, no model downloads)
 make lint        # ruff, ruff format --check, mypy --strict, eslint, tsc
 ```
 
-- **Unit tests** cover the chunker (budget, overlap, boundary preference, hard splits), RRF math, prompt building and escaping, citation parsing, parsers (generated PDF and DOCX fixtures), text cleaning, query rewriting, the fake provider, and the OpenAI and Anthropic adapters (streaming and structured output) against stub clients. They also cover the re-rankers: ordering, stable ties, top-k truncation, the cross-encoder and LLM re-rankers against stub models, the LLM fallback, and configuration. And the answer judge: statement and citation splitting, the heuristic judge, scoring of skipped or invalid verdicts, schema validation and aggregation.
+- **Unit tests** cover the chunker (budget, overlap, boundary preference, hard splits), RRF math, prompt building and escaping, citation parsing, parsers (generated PDF and DOCX fixtures), text cleaning, query rewriting, the fake provider, and the OpenAI, Anthropic and OpenRouter adapters (streaming, structured output, model fallbacks, retried stream errors) against stub clients, plus request pacing and backoff on a fake clock and the embedding cache. They also cover the re-rankers: ordering, stable ties, top-k truncation, the cross-encoder and LLM re-rankers against stub models, the LLM fallback, and configuration. And the answer judge: statement and citation splitting, the heuristic judge, scoring of skipped or invalid verdicts, schema validation and aggregation.
 - **Integration tests** run the real FastAPI app against PostgreSQL + pgvector with Alembic migrations applied: upload → background ingestion → status, deduplication, failed ingestion, SSE chat with citations, follow-up rewriting, document filters, conversation persistence, the re-ranking candidate pool, and judged answers from the real pipeline.
-- The real cross-encoder is not downloaded in tests or CI. Tests use stubs and the lexical re-ranker. CI installs the `rerank` extra only so mypy can type-check the adapter.
+- The real cross-encoder is not downloaded in tests or CI, and no test calls a real API. Tests use stubs, the lexical re-ranker and the `fake` providers. CI installs the `rerank` extra only so mypy can type-check the adapter.
 - If the database is unreachable, the integration tests are **skipped** and the unit tests still run. CI sets `REQUIRE_TEST_DB=1`, so there a missing database is a failure.
 
 ## Roadmap
